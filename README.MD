@@ -24,7 +24,7 @@ Use it to prototype workflows, demo pipelines, or validate Airflow DAGs that int
 
 ```bash
 # 1. Clone the repo (or open it inside Codespaces/Dev Container)
-git clone <this-repo> && cd pc2
+git clone <this-repo> && cd into the repo folder
 
 # 2. Build images (Airflow + Jenkins) and start everything
 docker compose up --build
