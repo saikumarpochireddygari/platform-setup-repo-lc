@@ -1,0 +1,170 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  # One-shot init: create mlflow database (idempotent)
+  postgres-mlflow-init:
+    image: postgres:13
+    depends_on:
+      - postgres
+    environment:
+      PGPASSWORD: airflow
+    command: >
+      bash -c "
+        until pg_isready -h postgres -U airflow -d airflow; do
+          echo 'Waiting for Postgres...';
+          sleep 2;
+        done;
+
+        echo 'Postgres is ready. Checking if mlflow DB exists...';
+
+        psql -h postgres -U airflow -d airflow -tc \"SELECT 1 FROM pg_database WHERE datname='mlflow'\" |
+        grep -q 1 ||
+        psql -h postgres -U airflow -d airflow -c \"CREATE DATABASE mlflow\";
+
+        echo 'Done.'
+      "
+    restart: "no"
+
+  # One-shot init job for Airflow DB + admin user
+  airflow-init:
+    build: ./airflow
+    depends_on:
+      - postgres
+      - postgres-mlflow-init
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__FERNET_KEY: "zmV0NxiEfoEPwY_4WP-D0Qe2fT4RzytxbxtucLA7OHw="
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+    volumes:
+      # code only (live edit)
+      - ./airflow/dags:/opt/airflow/dags
+      # runtime/state -> named volumes
+      - airflow_logs:/opt/airflow/logs
+      - airflow_plugins:/opt/airflow/plugins
+    command: |
+      bash -c "
+        airflow db migrate &&
+        airflow users create --username admin --password admin --firstname Sai --lastname Kumar --role Admin --email vishukings@gmail.com || true
+      "
+    restart: "no"
+
+  airflow-webserver:
+    build: ./airflow
+    depends_on:
+      - postgres
+      - airflow-init
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__FERNET_KEY: "zmV0NxiEfoEPwY_4WP-D0Qe2fT4RzytxbxtucLA7OHw="
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "True"
+      AIRFLOW__WEBSERVER__SECRET_KEY: "supersecretkey"
+      AIRFLOW__WEBSERVER__AUTH_BACKEND: "airflow.api.auth.backend.session"
+      AIRFLOW__API__AUTH_BACKEND: "airflow.api.auth.backend.basic_auth"
+
+      # MLflow & MinIO (S3 mock)
+      MLFLOW_TRACKING_URI: "http://mlflow:5000"
+      MLFLOW_S3_ENDPOINT_URL: "http://minio:9000"
+      AWS_ACCESS_KEY_ID: "minioadmin"
+      AWS_SECRET_ACCESS_KEY: "minioadmin"
+
+      PLATFORM_ENV: "dev"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+      - airflow_plugins:/opt/airflow/plugins
+    ports:
+      - "8080:8080"
+    command: webserver
+
+  airflow-scheduler:
+    build: ./airflow
+    depends_on:
+      - postgres
+      - airflow-init
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__FERNET_KEY: "zmV0NxiEfoEPwY_4WP-D0Qe2fT4RzytxbxtucLA7OHw="
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+
+      MLFLOW_TRACKING_URI: "http://mlflow:5000"
+      MLFLOW_S3_ENDPOINT_URL: "http://minio:9000"
+      AWS_ACCESS_KEY_ID: "minioadmin"
+      AWS_SECRET_ACCESS_KEY: "minioadmin"
+      AIRFLOW__API__AUTH_BACKEND: "airflow.api.auth.backend.basic_auth"
+
+      PLATFORM_ENV: "dev"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+      - airflow_plugins:/opt/airflow/plugins
+    command: scheduler
+
+  mlflow:
+    image: python:3.11-slim
+    container_name: mlflow
+    depends_on:
+      - postgres
+      - postgres-mlflow-init
+      - minio
+    working_dir: /app
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: "http://minio:9000"
+      AWS_ACCESS_KEY_ID: "minioadmin"
+      AWS_SECRET_ACCESS_KEY: "minioadmin"
+      PIP_NO_CACHE_DIR: "1"
+    ports:
+      - "5001:5000"  # host:container
+    command: >
+      sh -c "pip install --no-cache-dir 'mlflow[boto3]>=2.0.0,<3.0.0' psycopg2-binary &&
+             mlflow server --host 0.0.0.0 --port 5000
+             --backend-store-uri postgresql+psycopg2://airflow:airflow@postgres:5432/mlflow
+             --default-artifact-root s3://mlflow-artifacts/"
+
+  minio:
+    image: minio/minio:RELEASE.2024-01-13T07-53-03Z
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  jenkins:
+    build: ./jenkins
+    user: root
+    ports:
+      - "8081:8080"
+    environment:
+      JENKINS_OPTS: "--prefix=/jenkins"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      # optional: share DAGs into Jenkins
+      - ./airflow/dags:/shared/airflow_dags:ro
+      # optional: if Jenkins needs repo for builds
+      - ./:/workspace:ro
+    working_dir: /workspace
+
+volumes:
+  postgres_data:
+  minio_data:
+  jenkins_home:
+  airflow_logs:
+  airflow_plugins:
