@@ -159,7 +159,7 @@ services:
       # optional: share DAGs into Jenkins
       - ./airflow/dags:/shared/airflow_dags:ro
       # optional: if Jenkins needs repo for builds
-      - ./:/workspace:ro
+      - ./:/workspace
     working_dir: /workspace
 
 volumes:
