@@ -33,7 +33,7 @@ docker compose up --build
 docker compose down
 ```
 
-The `airflow-init` and `postgres-mlflow-init` services are one-shot jobs that prepare databases. They run automatically the first time (and re-run safely when needed).
+The `airflow-init`, `minio-init` and `postgres-mlflow-init` services are one-shot jobs that prepare databases & Bucket for Artifact Storage. They run automatically the first time (and re-run safely when needed).
 
 ---
 
