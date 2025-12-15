@@ -1,4 +1,4 @@
-## Airflow + MLflow + Jenkins Dev Stack
+## Airflow + MLflow + MinIO + Postgres + Jenkins Dev Stack
 
 This repository contains a self-contained Docker Compose environment for running an end-to-end MLOps playground. The stack bundles:
 
